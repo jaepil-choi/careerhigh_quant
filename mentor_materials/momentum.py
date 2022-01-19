@@ -3,29 +3,54 @@ import pandas as pd
 import pyfolio as pf
 
 class CrossAssetMomentum():
-    def __init__(self, prices, lookback_period, holding_period, n_selection, cost=0.001, signal_method='dm', weightings='emv', long_only=False, show_analytics=True):   
+    def __init__(
+        self, 
+        prices, 
+        lookback_period, 
+        holding_period, 
+        n_selection, 
+        cost=0.001, 
+        signal_method='dm', # 기본값: 듀얼 모멘텀
+        weightings='emv', 
+        long_only=False, 
+        show_analytics=True
+        ):
+
+        # price dataframe을 return으로 바꿔준다. = 일별수익률
         self.returns = self.get_returns(prices)
+        # 그리고 holding_period를 감안해 shift를 걸어준다. = holding_period 만큼의 수익률
         self.holding_returns = self.get_holding_returns(prices, holding_period)
 
-        if signal_method == 'am':
+        if signal_method == 'am': # 절대 모멘텀. 시장/섹터 neutral 없이 + 수익률이면 long, -면 short
             self.signal = self.absolute_momentum(prices, lookback_period, long_only)
-        elif signal_method == 'rm':
+        elif signal_method == 'rm': # 상대 모멘텀. 그룹 내 순위로 winner/loser 분류. 
             self.signal = self.relative_momentum(prices, lookback_period, n_selection, long_only)
-        elif signal_method == 'dm':
+        elif signal_method == 'dm': # 절대 모멘텀과 상대 모멘텀을 차례대로 operation 걸어줌. 
             self.signal = self.dual_momentum(prices, lookback_period, n_selection, long_only)
 
-        if weightings == 'ew':
+        if weightings == 'ew': # 동일 가중 배분
             self.cs_risk_weight = self.equal_weight(self.signal)
-        elif weightings == 'emv':
+        elif weightings == 'emv': # 개별 ii에서 최대 손실가능한 weight만 주는 배분
             self.cs_risk_weight = self.equal_marginal_volatility(self.returns, self.signal)
 
+        # rebalance weight 준다는 것은 한 번에 다 사지 않고 holding period동안 천천히 조금씩 사는 것. 
         self.rebalance_weight = 1 / holding_period
+        #  거래비용. 하지만 여기선 시그널에 그냥 bool 씌우고 * 0.001 같이, 주문 물량이나 유동성 등 상관 없이 단순화시켰다. 
         self.cost = self.transaction_cost(self.signal, cost)
 
-        self.port_rets_wo_cash = self.backtest(self.holding_returns, self.signal, self.cost, self.rebalance_weight, self.cs_risk_weight)
+        # portfolio returns without cash. 현금성 자산 제외하고 single asset에 대한 간단한 총 수익 (또는 수익률?)
+        self.port_rets_wo_cash = self.backtest(
+            self.holding_returns, 
+            self.signal, 
+            self.cost, 
+            self.rebalance_weight, 
+            self.cs_risk_weight
+            )
         
+        # 종적(time series) 방향으로 risk weight를 정해준다...? ########## 질문
         self.ts_risk_weight = self.volatility_targeting(self.port_rets_wo_cash)
         
+        # 최종적인 portfolio return: 최대 인내 가능 risk weight를 줬을 때
         self.port_rets = self.port_rets_wo_cash * self.ts_risk_weight
         
         if show_analytics == True:
@@ -83,8 +108,8 @@ class CrossAssetMomentum():
             Absolute momentum signals     
         """    
         returns = prices.pct_change(periods=lookback).fillna(0)
-        long_signal = (returns > 0).applymap(self.bool_converter)
-        short_signal = -(returns < 0).applymap(self.bool_converter)
+        long_signal = (returns > 0).applymap(self.bool_converter) # 그냥 단순히 0보다 크면 산다 1
+        short_signal = -(returns < 0).applymap(self.bool_converter) # 그냥 단순히 0보다 작으면 -1
         if long_only == True:
             signal = long_signal
         else:
@@ -111,9 +136,9 @@ class CrossAssetMomentum():
             Relative momentum signals     
         """
         returns = prices.pct_change(periods=lookback).fillna(0)
-        rank = returns.rank(axis=1, ascending=False)
-        long_signal = (rank <= n_selection).applymap(self.bool_converter)
-        short_signal = -(rank >= len(rank.columns) - n_selection + 1).applymap(self.bool_converter)
+        rank = returns.rank(axis=1, ascending=False) # di 에서 모든 종목 rank
+        long_signal = (rank <= n_selection).applymap(self.bool_converter) # winners 골라서 산다 1
+        short_signal = -(rank >= len(rank.columns) - n_selection + 1).applymap(self.bool_converter) # losers 골라서 판다 1
         if long_only == True:
             signal = long_signal
         else:
@@ -139,9 +164,9 @@ class CrossAssetMomentum():
         returns : dataframe
             Dual momentum signals     
         """
-        abs_signal = self.absolute_momentum(prices, lookback, long_only)
-        rel_signal = self.relative_momentum(prices, lookback, n_selection, long_only)
-        signal = (abs_signal == rel_signal).applymap(self.bool_converter) * abs_signal
+        abs_signal = self.absolute_momentum(prices, lookback, long_only) # 먼저 abs 기준으로 시그널 내놓고
+        rel_signal = self.relative_momentum(prices, lookback, n_selection, long_only) # rel 기준으로도 시그널을 내놓고
+        signal = (abs_signal == rel_signal).applymap(self.bool_converter) * abs_signal # 두 조건 모두 만족하는 것만 골라서 남긴다. 
         return signal
 
     def equal_weight(self, signal):
