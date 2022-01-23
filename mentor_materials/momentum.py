@@ -30,17 +30,18 @@ class CrossAssetMomentum():
         elif signal_method == 'dm': # 절대 모멘텀과 상대 모멘텀을 차례대로 operation 걸어줌. 
             self.signal = self.dual_momentum(prices, lookback_period, n_selection, long_only)
 
+        # risk engine (횡적)
         if weightings == 'ew': # 동일 가중 배분
             self.cs_risk_weight = self.equal_weight(self.signal)
         elif weightings == 'emv': # 개별 ii에서 최대 손실가능한 weight만 주는 배분
             self.cs_risk_weight = self.equal_marginal_volatility(self.returns, self.signal)
 
         # rebalance weight 준다는 것은 한 번에 다 사지 않고 holding period동안 천천히 조금씩 사는 것. 
-        self.rebalance_weight = 1 / holding_period
+        self.rebalance_weight = 1 / holding_period # rebalancing 주기: 1
         #  거래비용. 하지만 여기선 시그널에 그냥 bool 씌우고 * 0.001 같이, 주문 물량이나 유동성 등 상관 없이 단순화시켰다. 
         self.cost = self.transaction_cost(self.signal, cost)
 
-        # portfolio returns without cash. 현금성 자산 제외하고 single asset에 대한 간단한 총 수익 (또는 수익률?)
+        # portfolio returns without cash. 현금성 자산 제외하고 (종적 리스크 모델 제외하고) single asset에 대한 간단한 총 수익 (또는 수익률?)
         self.port_rets_wo_cash = self.backtest(
             self.holding_returns, 
             self.signal, 
@@ -49,7 +50,7 @@ class CrossAssetMomentum():
             self.cs_risk_weight
             )
         
-        # 종적(time series) 방향으로 risk weight를 정해준다...? ########## 질문
+        # 종적(time series) 방향으로 risk weight를 정해준다. 얼마를 cash가져가고 얼마를 factor portfolio 투자할 것인지.
         self.ts_risk_weight = self.volatility_targeting(self.port_rets_wo_cash)
         
         # 최종적인 portfolio return: 최대 인내 가능 risk weight를 줬을 때
@@ -89,6 +90,11 @@ class CrossAssetMomentum():
         holding_returns : dataframe
             Periodic returns for each holding period. Pulled by N (holding_period) days forward to keep inline with trading signals.
         """
+
+        # n일짜리 수익률을 계산해줌. 
+        # 그러기 위해 미래 수익률을 과거로 땡김. shift(-n)을 하는 것. 
+        # 내가 만든 trading signal에 의해 수행한 거래가 n일 뒤 얼마의 return을 가져왔는지 계산하기 위해서. 
+        # fillna(0) 부분은 땡겨져서 비어버린 맨 마지막 부분을 채워줌. 
         holding_returns = prices.pct_change(periods=holding_period).shift(-holding_period).fillna(0)
         return holding_returns
 
@@ -171,6 +177,7 @@ class CrossAssetMomentum():
         signal = (abs_signal == rel_signal).applymap(self.bool_converter) * abs_signal # 두 조건 모두 만족하는 것만 골라서 남긴다. 
         return signal
 
+    # 횡적 리스크 1
     def equal_weight(self, signal):
         """Returns Equal Weights
 
@@ -185,11 +192,12 @@ class CrossAssetMomentum():
             Equal weights for cross-asset momentum portfolio
         """
         total_signal = 1 / abs(signal).sum(axis=1)
-        total_signal.replace([np.inf, -np.inf], 0, inplace=True)
-        weight = pd.DataFrame(index=signal.index, columns=signal.columns).fillna(value=1)
+        total_signal.replace([np.inf, -np.inf], 0, inplace=True) # 시그널 다 0 떠서 나눠주니 inf 떴을 때를 대비. 
+        weight = pd.DataFrame(index=signal.index, columns=signal.columns).fillna(value=1) # signal df에 그냥 1만 채운거. 
         weight = weight.mul(total_signal, axis=0)
         return weight
 
+    # 횡적 리스크 2 동등한계변동성
     def equal_marginal_volatility(self, returns, signal):
         """Returns Equal Marginal Volatility (Inverse Volatility)
         
@@ -206,19 +214,26 @@ class CrossAssetMomentum():
             Weights using equal marginal volatility
 
         """
-        vol = (returns.rolling(252).std() * np.sqrt(252)).fillna(0)
-        vol_signal = vol * abs(signal)
-        inv_vol = 1 / vol_signal
-        inv_vol.replace([np.inf, -np.inf], 0, inplace=True)
-        weight = inv_vol.div(inv_vol.sum(axis=1), axis=0).fillna(0)
+        vol = (returns.rolling(252).std() * np.sqrt(252)).fillna(0) 
+        # 과거 1년간의 변동성 (수익률 표준편차) 구하고 연율화시키기 위해 루트(252) 곱해주는 것 .
+        # rolling했으니까 첫 252일 데이터 없으니 0으로 만들어준다. 
+
+        vol_signal = vol * abs(signal) # 변동성 x 시그널
+        inv_vol = 1 / vol_signal # 역변동성. 1/10% 와 같이 하니까, 변동성 크면 적게 투자함. 
+        inv_vol.replace([np.inf, -np.inf], 0, inplace=True) # 혹시 모를 inf를 처리
+        weight = inv_vol.div(inv_vol.sum(axis=1), axis=0).fillna(0) # weight 합하면 1 될 수 있도록 만든다. 
         return weight
 
     def volatility_targeting(self, returns, target_vol=0.01):
+        # 종적 리스크 모델. 각 시점마다 얼마를 cash로, 얼마를 투자금으로 가져갈지. 
+        # 여기서 return은 그냥 return이 아니고 factor portfolio의 return
+
+        # 전체 포트폴리오의 목표 변동성을 유지하고자 하는 것. (현금, 투자금 포함한 전체)
         """Returns Weights based on Vol Target
         
         Parameters
         ----------
-        returns : dataframe
+        returns : dataframe 
             Historical daily returns of backtested portfolio
         target_vol : float, optional
             Target volatility, Default target volatility is 1%
@@ -230,6 +245,9 @@ class CrossAssetMomentum():
 
         """
         weight = target_vol / (returns.rolling(252).std() * np.sqrt(252)).fillna(0)
+        # 아까처럼 연율화시킨 변동성으로 나눠준다. 
+        # 방향만 종적으로 바뀐 것이다. 많이 잃어도 1%만 잃을 수있게
+
         weight.replace([np.inf, -np.inf], 0, inplace=True)
         weight = weight.shift(1).fillna(0)
         return weight
@@ -250,7 +268,7 @@ class CrossAssetMomentum():
             Transaction cost dataframe
 
         """
-        cost_df = (signal.diff() != 0).applymap(self.bool_converter) * cost
+        cost_df = (signal.diff() != 0).applymap(self.bool_converter) * cost # 차이가 0이 아니면 cost를 입히자. 
         cost_df.iloc[0] = 0
         return cost_df
     
@@ -276,6 +294,10 @@ class CrossAssetMomentum():
             Portfolio returns dataframe without applying time-series risk model
 
         """
+
+        # weighting은 횡적 weight이다. 실제 ii에 weight나눠주는 것. 
+        # signal 단에선 signal의 강함과 약함에 따라 ii에 weight를 나눠줬지만
+        # weighting 단에선 그것과 관계 없이 각각의 ii의 과거 return의 변동성에 따라 weight를 정해주는 것이다. 
         port_rets = ((signal * returns - cost) * rebalance_weight * weighting).sum(axis=1)
         return port_rets
 
