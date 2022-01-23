@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import pyfolio as pf
 
+import quantstats as qs
+
 class CrossAssetMomentum():
     def __init__(
         self, 
@@ -290,7 +292,8 @@ class CrossAssetMomentum():
         None
 
         """
-        pf.create_returns_tear_sheet(returns)
+        # pf.create_returns_tear_sheet(returns)
+        qs.reports.full(returns, benchmark="SPY")
 
     def bool_converter(self, bool_var):
         """Returns Integer Value from Boolean Value
