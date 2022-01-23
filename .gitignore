@@ -176,3 +176,6 @@ pip-selfcheck.json
 
 # Built Visual Studio Code Extensions
 *.vsix
+
+## My files
+sandbox.ipynb
