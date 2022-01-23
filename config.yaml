@@ -1,0 +1,22 @@
+---
+PM:
+  classvars:
+    name: price_sma_momentum
+    description: Simple price / SMA crossover momentum for a single asset
+    scheme: D-0
+    tags: 
+      - momentum
+      - single_asset
+    hyperparams:
+      sma:
+        - default: 20
+        - range: 10
+        - interval: 5
+    dependencies: 
+      - quantdaddy_price
+  instances:
+    - foo
+
+    
+
+  

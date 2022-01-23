@@ -14,4 +14,4 @@ class PathConfig:
 
 @dataclass
 class PMConfig:
-    pass
+    
